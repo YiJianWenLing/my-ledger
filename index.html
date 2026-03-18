@@ -568,32 +568,193 @@
             initialBalance = val; saveData(); render(); closeModal('asset-modal');
         };
 
+        // --- 增强的数据导出与导入功能 ---
+
+        // 显示简单提示消息 (Toast)
+        function showToast(message, duration = 2000) {
+            const toast = document.createElement('div');
+            toast.textContent = message;
+            toast.style.position = 'fixed';
+            toast.style.bottom = '80px';
+            toast.style.left = '50%';
+            toast.style.transform = 'translateX(-50%)';
+            toast.style.background = 'rgba(0,0,0,0.7)';
+            toast.style.color = 'white';
+            toast.style.padding = '10px 20px';
+            toast.style.borderRadius = '25px';
+            toast.style.fontSize = '0.9rem';
+            toast.style.zIndex = '1000';
+            toast.style.transition = 'opacity 0.3s';
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, duration);
+        }
+
         window.exportData = function() {
-            let csv = "日期,类型,分类,金额,备注\n";
-            records.sort((a,b)=>new Date(a.timestamp)-new Date(b.timestamp)).forEach(r => {
-                csv += `${new Date(r.timestamp).toLocaleString('zh-CN')},${r.type},${r.category},${r.amount},"${r.note||''}"\n`;
+            // 1. 计算当前的精确余额
+            const calculatedBalance = records.reduce((sum, r) => {
+                return r.type === 'income' ? sum + parseFloat(r.amount) : sum - parseFloat(r.amount);
+            }, initialBalance);
+
+            // 2. 构建包含当前余额的完整备份对象
+            const backupData = {
+                version: '1.0',
+                exportTime: new Date().toISOString(),
+                initialBalance: initialBalance,
+                currentBalance: calculatedBalance, // 【新增】直接记录当前余额
+                records: records
+            };
+            
+            const jsonStr = JSON.stringify(backupData, null, 2);
+            const jsonBlob = new Blob([jsonStr], {type: "application/json"});
+            const jsonLink = document.createElement("a");
+            jsonLink.href = URL.createObjectURL(jsonBlob);
+            jsonLink.download = `账本完整备份_${new Date().toISOString().slice(0,10)}.json`;
+            jsonLink.click();
+
+            // 3. CSV 导出部分保持不变 (CSV主要用于分析流水，通常不需要总余额行，但可以在末尾注释)
+            let csvContent = "日期,类型,分类,金额,备注\n";
+            const sortedRecords = [...records].sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
+            sortedRecords.forEach(r => {
+                const dateStr = new Date(r.timestamp).toLocaleString('zh-CN', { hour12: false });
+                const noteSafe = (r.note || '').replace(/"/g, '""');
+                csvContent += `${dateStr},${r.type},${r.category},${r.amount},"${noteSafe}"\n`;
             });
-            csv += `\n# 初始资金: ${initialBalance}`;
-            const blob = new Blob([csv], {type: "text/csv;charset=utf-8;"});
-            const link = document.createElement("a");
-            link.href = URL.createObjectURL(blob);
-            link.download = `账本备份_${new Date().toISOString().slice(0,10)}.csv`;
-            link.click();
+            // 在CSV末尾添加关键数据注释
+            csvContent += `\n# 初始资金: ${initialBalance}\n# 导出时余额: ${calculatedBalance}\n# 导出时间: ${new Date().toLocaleString('zh-CN')}`;
+            
+            const csvBlob = new Blob(["\uFEFF" + csvContent], {type: "text/csv;charset=utf-8;"});
+            const csvLink = document.createElement("a");
+            csvLink.href = URL.createObjectURL(csvBlob);
+            csvLink.download = `账本明细表_${new Date().toISOString().slice(0,10)}.csv`;
+            csvLink.click();
+
+            showToast(`✅ 已导出 (当前余额: ¥${calculatedBalance})`);
         };
-        window.triggerImport = function() { els.fileInput.click(); };
+        
+        window.triggerImport = function() { 
+            els.fileInput.click(); 
+        };
+
         window.importData = function(input) {
-            const file = input.files[0]; if(!file) return;
+            const file = input.files[0]; 
+            if(!file) return;
+
+            // 1. 基础校验：必须是 JSON 文件
+            if (!file.name.toLowerCase().endsWith('.json')) {
+                alert('❌ 格式错误\n\n仅支持 .json 格式的备份文件进行恢复！\n\n提示：\n- 如果您想查看 Excel 表格，请直接打开 .csv 文件，无需导入。\n- 请重新选择由本应用导出的 .json 备份文件。');
+                input.value = ''; // 清空以便重新选择
+                return;
+            }
+
             const reader = new FileReader();
+            
             reader.onload = function(e) {
                 try {
-                    const imported = JSON.parse(e.target.result);
-                    if(Array.isArray(imported) && confirm(`发现 ${imported.length} 条记录。确认合并？`)) {
-                        records = [...records, ...imported.map(r => ({...r, id: Date.now()+Math.random()}))];
-                        saveData(); render(); alert('导入成功！');
+                    const data = JSON.parse(e.target.result);
+                    
+                    // 2. 数据结构校验
+                    if (!data.records || !Array.isArray(data.records)) {
+                        throw new Error("文件格式无效：缺少 'records' 数据列表。");
                     }
-                } catch(err) { alert('格式错误'); }
+                    if (typeof data.initialBalance === 'undefined') {
+                        throw new Error("文件格式过旧或不完整：缺少 'initialBalance' (初始资金)。");
+                    }
+
+                    // 3. 提取关键信息用于展示
+                    const recordCount = data.records.length;
+                    const backupDate = data.exportTime ? new Date(data.exportTime).toLocaleString('zh-CN') : '未知时间';
+                    
+                    // 兼容旧版本备份：如果没有 currentBalance 字段，则提示需计算
+                    const displayBalance = typeof data.currentBalance !== 'undefined' 
+                        ? `¥${data.currentBalance}` 
+                        : "需恢复后自动计算";
+
+                    // 4. 第一步选择：覆盖 还是 合并？
+                    // confirm 返回 true = 覆盖，false = 合并
+                    const isOverwriteMode = confirm(
+                        `📂 检测到备份文件：${file.name}\n\n` +
+                        `📅 备份时间：${backupDate}\n` +
+                        `📝 记录条数：${recordCount} 条\n` +
+                        `💰 初始资金：¥${data.initialBalance}\n` +
+                        `🏦 备份时余额：${displayBalance}\n\n` +
+                        `⚠️ 请选择恢复模式：\n\n` +
+                        `【确定】(OK)   ➔  覆盖恢复\n(清空当前所有数据，完全还原到备份时的状态)\n\n` +
+                        `【取消】(Cancel) ➔  合并导入\n(保留当前数据，将备份的记录追加进来)`
+                    );
+
+                    if (isOverwriteMode) {
+                        // === 模式 A: 覆盖恢复 ===
+                        const finalConfirm = confirm(
+                            `⛔ 高危操作确认 ⛔\n\n` +
+                            `您即将【覆盖恢复】数据！\n\n` +
+                            `后果：\n` +
+                            `1. 当前账本中【新增】的所有记录将被永久删除。\n` +
+                            `2. 初始资金将被重置为 ¥${data.initialBalance}。\n` +
+                            `3. 数据将完全回到 ${backupDate} 的状态。\n\n` +
+                            `建议：如果不确定，请先点击“导出”备份当前数据。\n\n` +
+                            `确定要执行覆盖恢复吗？`
+                        );
+
+                        if (finalConfirm) {
+                            // 执行覆盖
+                            records = data.records.map(r => ({...r})); // 深拷贝防止引用问题
+                            initialBalance = parseFloat(data.initialBalance) || 0;
+                            
+                            saveData(); // 保存到 localStorage
+                            render();   // 刷新界面
+                            cancelEdit(); // 关闭可能打开的编辑面板
+                            
+                            showToast(`✅ 恢复成功！\n已还原至 ${backupDate} 的状态`);
+                        }
+                    } else {
+                        // === 模式 B: 合并导入 ===
+                        const mergeConfirm = confirm(
+                            `🔗 合并导入确认\n\n` +
+                            `您即将把 ${recordCount} 条记录【追加】到当前账本。\n\n` +
+                            `注意：\n` +
+                            `1. 当前现有的记录【不会】被删除。\n` +
+                            `2. 初始资金保持当前值不变 (¥${initialBalance})。\n` +
+                            `3. 系统会自动为新导入的记录生成新 ID，防止冲突。\n\n` +
+                            `确定要合并这些数据吗？`
+                        );
+
+                        if (mergeConfirm) {
+                            // 执行合并
+                            // 关键：为导入的每条记录生成新的唯一 ID，避免与现有记录 ID 冲突
+                            const newRecords = data.records.map(r => ({
+                                ...r, 
+                                id: Date.now() + Math.random().toString(36).substr(2, 9) 
+                            }));
+                            
+                            records = [...records, ...newRecords];
+                            // 合并模式下不修改 initialBalance，因为这是历史流水的追加
+                            
+                            saveData();
+                            render();
+                            
+                            showToast(`🎉 合并成功！\n新增了 ${recordCount} 条记录`);
+                        }
+                    }
+
+                } catch(err) {
+                    console.error("Import Error:", err);
+                    alert(`❌ 导入失败\n\n原因：${err.message}\n\n请确保文件是由此应用生成的完整 .json 备份文件，且未被篡改。`);
+                } finally {
+                    // 无论成功失败，都清空 input value，允许用户重复选择同一文件
+                    input.value = ''; 
+                }
             };
-            reader.readAsText(file); input.value='';
+
+            reader.onerror = function() {
+                alert('❌ 读取文件失败\n\n请检查文件是否损坏或权限受限。');
+                input.value = '';
+            };
+
+            reader.readAsText(file);
         };
         window.showClearConfirm = () => document.getElementById('clear-modal').style.display = 'flex';
         window.closeModal = (id) => document.getElementById(id).style.display = 'none';
