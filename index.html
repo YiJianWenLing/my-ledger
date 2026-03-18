@@ -322,13 +322,25 @@
         }
 
         // --- 面板控制逻辑 ---
-        window.openPanel = function() {
-            if(editingId) return; // 编辑中不允许重复打开
+       // --- 修复后的面板控制逻辑 ---
+
+        window.openPanel = function(forceOpen = false) {
+            // 如果是强制打开（用于编辑），则忽略 editingId 检查
+            if (!forceOpen && editingId) {
+                console.log("正在编辑中，无法新建");
+                return; 
+            }
+            
             isPanelOpen = true;
             els.overlay.classList.add('active');
             els.inputPanel.classList.add('active');
-            els.fabBtn.classList.add('hidden'); // 隐藏悬浮球
-            setTimeout(() => els.amount.focus(), 300); // 聚焦
+            els.fabBtn.classList.add('hidden');
+            
+            // 稍微延迟聚焦，确保动画开始后键盘弹出更平滑
+            setTimeout(() => {
+                if(!editingId) els.amount.focus(); 
+                else els.amount.focus(); // 编辑时也聚焦金额框方便修改
+            }, 300);
         };
 
         window.closePanel = function() {
@@ -431,22 +443,27 @@
             const record = records.find(r => r.id === id);
             if (!record) return;
 
+            // 1. 设置编辑状态
             editingId = id;
             currentMode = record.type;
             
+            // 2. 填充数据
             els.amount.value = record.amount;
             els.category.value = record.category;
+            // 确保时间格式正确
             els.datetime.value = toLocalISOString(new Date(record.timestamp));
             els.note.value = record.note || '';
             
-            setMode(record.type);
+            // 3. 更新界面文字和按钮状态
+            setMode(record.type); // 这会更新分类列表和颜色
+            
             els.panelTitle.textContent = "编辑记录";
             els.actionBtn.textContent = '保存修改';
-            els.actionBtn.className = 'edit-mode';
-            els.cancelBtn.classList.remove('hidden');
+            els.actionBtn.className = 'edit-mode'; // 蓝色按钮
+            els.cancelBtn.classList.remove('hidden'); // 显示取消按钮
             
-            // 打开面板
-            openPanel();
+            // 4. 强制打开面板
+            openPanel(true); 
         };
 
         window.cancelEdit = function() {
